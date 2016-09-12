@@ -1,6 +1,6 @@
 {
   "name": "mixnetsol",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "A Mix Network implementation in solidity",
   "main": "mixnet_helper.js",
   "directories": {
@@ -26,6 +26,7 @@
   },
   "homepage": "https://github.com/jbaylina/mixnetsol",
   "dependencies": {
-    "ecsol": "0.0.3"
+    "ecsol": "0.0.3",
+    "ethconnector": "0.0.4"
   }
 }

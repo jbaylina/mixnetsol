@@ -20,6 +20,7 @@ var _ = require('lodash');
 var verbose = false;
 var NUsers = 3;
 var depositValue = 10;  // In Ethers
+var fee = 1;
 
 function log(S) {
     if (verbose) {
@@ -54,7 +55,11 @@ describe('Normal MixNet Operation', function(){
     });
     it('should deploy the MixNet ', function(done){
         this.timeout(200000000);
-        mixNetHelper.deploy({}, function(err, _mixNet) {
+        mixNetHelper.deploy({
+            depositValue: ethConnector.web3.toWei(depositValue),
+            fee: ethConnector.web3.toWei(fee),
+            maxUsers: 5
+        }, function(err, _mixNet) {
             assert.ifError(err);
             assert.ok(_mixNet.address);
             mixNet = _mixNet;

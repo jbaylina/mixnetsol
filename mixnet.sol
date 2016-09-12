@@ -9,9 +9,6 @@ contract EC {
 
 contract MixNet {
 
-    uint constant depositValue=10 ether;
-    uint constant fee= 1 ether;
-
     uint constant ST_DEPOSITING = 0;
     uint constant ST_HASHING = 1;
     uint constant ST_MIXING = 2;
@@ -27,8 +24,10 @@ contract MixNet {
 
     uint constant NSlotsPerUser = 5;
 
-    uint NUsers;
-    uint NSlots;
+    uint public NUsers;
+    uint public NSlots;
+    uint public depositValue;
+    uint public fee;
     EC ec;
 
     uint constant D160 = 0x10000000000000000000000000000000000000000;
@@ -74,11 +73,15 @@ contract MixNet {
     modifier onlyOwner { if (msg.sender != owner) throw; _; }
 
 
-    function MixNet() {
+    function MixNet(uint _depositValue, uint _fee, uint _maxUsers) {
         state = ST_DEPOSITING;
         stateDate = now;
         owner = msg.sender;
         ec = EC(ECAddress);
+        depositValue = _depositValue;
+        fee = _fee;
+        pendingUsers = _maxUsers;
+        if (pendingUsers == 0) throw;
     }
 
 
@@ -101,6 +104,12 @@ contract MixNet {
 
         userState.pubX = pubX;
         userState.pubY = pubY;
+
+        pendingUsers--;
+
+        if (pendingUsers == 0) {
+            doClose();
+        }
     }
 
     function deposit(uint pubX, uint pubY) payable {
@@ -112,12 +121,7 @@ contract MixNet {
     }
 
 
-    function close() onlyOwner {
-        if (state != ST_DEPOSITING)
-            throw;
-        if (now > stateDate + TIMEOUT_DEPOSITING)
-            throw;
-
+    function doClose() internal {
         NUsers = userStates.length;
         NSlots = NUsers * NSlotsPerUser;
         state = ST_HASHING;
@@ -125,6 +129,15 @@ contract MixNet {
         stateDate = now;
         seed = uint(sha3(now, block.blockhash(block.number-1)));
         board.length = NSlots * 2;
+    }
+
+    function close() onlyOwner {
+        if (state != ST_DEPOSITING)
+            throw;
+        if (now > stateDate + TIMEOUT_DEPOSITING)
+            throw;
+
+        doClose();
     }
 
     function setHashFrom(address from, bytes32 hash) internal {

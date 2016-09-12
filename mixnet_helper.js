@@ -31,6 +31,9 @@ exports.deploy = function(opts, cb) {
                 compilationResult.MixNet.bytecode,
                 0,
                 0,
+                opts.depositValue,
+                opts.fee,
+                opts.maxUsers,
                 cb);
         },
     ], function(err, mixnet) {

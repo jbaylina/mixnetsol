@@ -1,4 +1,6 @@
-contract ECCurve {
+pragma solidity ^0.4.0;
+
+contract EC {
   function publicKey(uint256 privKey) constant
     returns(uint256 qx, uint256 qy);
   function deriveKey(uint256 privKey, uint256 pubX, uint256 pubY) constant
@@ -6,50 +8,58 @@ contract ECCurve {
 }
 
 contract MixNet {
-    uint constant depositValue=100;
-    uint constant fee= 10;
+
+    uint constant depositValue=10 ether;
+    uint constant fee= 1 ether;
 
     uint constant ST_DEPOSITING = 0;
-    uint constant ST_MIXING = 1;
-    uint constant ST_VALIDATING = 2;
-    uint constant ST_TERMINATING = 3;
+    uint constant ST_HASHING = 1;
+    uint constant ST_MIXING = 2;
+    uint constant ST_VALIDATING = 3;
+    uint constant ST_TERMINATING = 4;
 
     uint constant TIMEOUT_DEPOSITING = 1 hours;
+    uint constant TIMEOUT_HASHING = 1 hours;
     uint constant TIMEOUT_MIXING = 1 hours;
     uint constant TIMEOUT_VALIDATING = 1 hours;
+    uint constant TIMEOUT_TERMINATING = 30 days;
 
-    uint constant NUsers = 5;
-    uint constant NSlots = 25;
+
     uint constant NSlotsPerUser = 5;
 
-    ECCurve ec;
-
+    uint NUsers;
+    uint NSlots;
+    EC ec;
 
     uint constant D160 = 0x10000000000000000000000000000000000000000;
+    uint constant ECAddress = 0x0;
 
     uint state;
     uint stateDate;
     uint pendingUsers;
-    uint blockClosed;
+    uint seed;
 
     struct UserState {
         uint pubX;
         uint pubY;
+// For hashing
         bytes32 hashData;
 
+// For mixing
+        bool dataSent;
+
+// Termination state
+        uint pending;
+
 // For Validation state
-        bytes32[] mask;
         uint privKey;
         address dest;
         uint validationState;
         bool validated;
-
-
-// Termination state
-        uint pending;
+        bytes32[] mask;
     }
 
-    UserState[] userStates;
+    UserState[] public userStates;
 
     mapping(address => uint) userStateIdx; // Index Relative to 1 in userStates
 
@@ -61,20 +71,20 @@ contract MixNet {
 
     address owner;
 
+    modifier onlyOwner { if (msg.sender != owner) throw; _; }
+
 
     function MixNet() {
         state = ST_DEPOSITING;
         stateDate = now;
-        pendingUsers = NUsers;
-        board.length = NSlots * 2;
         owner = msg.sender;
-        ec = ECCurve(0x0);
+        ec = EC(ECAddress);
     }
 
 
 
-    function deposit(uint pubX, uint pubY) {
-        uint idx = userStateIdx[msg.sender];
+    function depositFrom(address from, uint pubX, uint pubY) internal {
+        uint idx = userStateIdx[from];
 
         if (state != ST_DEPOSITING)
             throw;
@@ -87,45 +97,97 @@ contract MixNet {
 
         userStates.length ++;
         UserState userState = userStates [userStates.length-1];
-        userStateIdx[msg.sender] = userStates.length;
+        userStateIdx[from] = userStates.length;
 
         userState.pubX = pubX;
         userState.pubY = pubY;
-
-        pendingUsers --;
-
-
-        if (pendingUsers == 0) {
-            state = ST_MIXING;
-            pendingUsers = NUsers;
-            stateDate = now;
-            blockClosed = block.number;
-        }
     }
 
-    function mix(bytes32[] data) {
-        uint i;
-        uint idx = userStateIdx[msg.sender];
+    function deposit(uint pubX, uint pubY) payable {
+        depositFrom(msg.sender, pubX, pubY);
+    }
+
+    function proxyDeposit(address from, uint pubX, uint pubY) onlyOwner payable {
+        depositFrom(from, pubX, pubY);
+    }
+
+
+    function close() onlyOwner {
+        if (state != ST_DEPOSITING)
+            throw;
+        if (now > stateDate + TIMEOUT_DEPOSITING)
+            throw;
+
+        NUsers = userStates.length;
+        NSlots = NUsers * NSlotsPerUser;
+        state = ST_HASHING;
+        pendingUsers = NUsers;
+        stateDate = now;
+        seed = uint(sha3(now, block.blockhash(block.number-1)));
+        board.length = NSlots * 2;
+    }
+
+    function setHashFrom(address from, bytes32 hash) internal {
+        uint idx = userStateIdx[from];
 
         if (idx == 0)
             throw;
-        if (now > stateDate + TIMEOUT_MIXING)
+        if (state != ST_HASHING)
             throw;
-        if (state != ST_DEPOSITING)
+        if (now > stateDate + TIMEOUT_HASHING)
             throw;
-        if (data.length != board.length)
-            throw;
+
 
         UserState userState = userStates[idx-1];
 
         if (userState.hashData != 0)
             throw;
 
+        userState.hashData = hash;
         pendingUsers --;
-        userState.hashData = sha3(data);
+
+        if (pendingUsers == 0) {
+            state = ST_MIXING;
+            pendingUsers = NUsers;
+            stateDate = now;
+        }
+    }
+
+    function proxySetHash(address from, bytes32 hash) onlyOwner {
+        setHashFrom(from, hash);
+    }
+
+    function setHash(bytes32 hash) {
+        setHashFrom(msg.sender, hash);
+    }
+
+    function mixFrom(address from, uint[] data) internal {
+        uint i;
+        uint idx = userStateIdx[from];
+
+
+        if (idx == 0)
+            throw;
+        if (state != ST_MIXING)
+            throw;
+        if (now > stateDate + TIMEOUT_MIXING)
+            throw;
+        if (data.length != board.length)
+            throw;
+
+        UserState userState = userStates[idx-1];
+
+        if (userState.hashData != sha3(data))
+            throw;
+        if (userState.dataSent) {
+            throw;
+        }
+
+        userState.dataSent = true;
+        pendingUsers --;
 
         for (i=0; i< data.length; i++) {
-            board[i] = board[i] ^ data[i];
+            board[i] = board[i] ^ bytes32(data[i]);
         }
 
         // The last one pay the party.
@@ -134,6 +196,22 @@ contract MixNet {
             validateBoardAndPay();
         }
     }
+
+    function proxyMix(address from, uint[] data) onlyOwner {
+        mixFrom(from, data);
+    }
+
+    function mix(uint[] data) {
+        mixFrom(msg.sender, data);
+    }
+
+/*
+    uint st1;
+    uint st2;
+    function debug() constant returns(uint, uint) {
+        return (st1,st2);
+    }
+*/
 
     function validateBoardAndPay() internal {
 
@@ -175,6 +253,15 @@ contract MixNet {
         return true;
     }
 
+    function getBoard(uint i) constant  returns (bytes32) {
+        return board[i];
+    }
+
+    function getMask(uint idx, uint i) constant  returns (bytes32) {
+        UserState userState = userStates[idx];
+        return userState.mask[i];
+    }
+
     function getByte(uint data, uint p) internal returns (uint) {
         uint pos = (2 ** (p*8));
         uint mask = 0xFF * pos;
@@ -184,14 +271,16 @@ contract MixNet {
 
     function setByte(uint data, uint p, byte v) internal returns (uint) {
         uint pos = (2 ** (p*8));
-        uint res = res | (uint(v) * pos);
+        uint res = data | (uint(v) * pos);
         return res;
     }
 
     function boardIsZero() internal returns(bool) {
         uint i;
         for (i=0; i<board.length; i++) {
-            if (board[i] != 0) return false;
+            if (board[i] != 0) {
+                return false;
+            }
         }
         return true;
     }
@@ -199,12 +288,16 @@ contract MixNet {
     function payAll() internal returns(bool) {
         uint i;
         for (i=0; i<destAddrs.length; i++) {
-            destAddrs[i].send(depositValue);
+            if (!destAddrs[i].send(depositValue)) {
+                if (!owner.send(depositValue)) {
+                    throw;
+                }
+            }
         }
     }
 
-    function validate(uint privKey, address dest) {
-        uint idx = userStateIdx[msg.sender];
+    function validateFrom(address from, uint privKey, address dest) internal {
+        uint idx = userStateIdx[from];
         uint i;
 
         if (idx == 0)
@@ -226,7 +319,7 @@ contract MixNet {
             userState.validationState ++;
             return;
         } else if (userState.validationState < NUsers) {
-            idx = (userState.validationState <= idx) ? userState.validationState-1 : userState.validationState;
+            idx = (userState.validationState < idx) ? userState.validationState-1 : userState.validationState;
             UserState otheUser = userStates[idx];
             var (qx, ) = ec.deriveKey(privKey, otheUser.pubX, otheUser.pubY);
 
@@ -239,59 +332,83 @@ contract MixNet {
             userState.validationState ++;
             return;
         } else if (userState.validationState == NUsers) {
-            uint d = calcDataHash(userState.privKey, getSeed(), dest);
+            uint d = calcDataHash(userState.privKey, getSeed(), userState.dest);
+            h = sha3(d);
             for (i=0; i<NSlotsPerUser; i++) {
                 uint slot = getByte(d, 31-i);
-                userState.mask[i*2] ^= bytes32(d);
-                userState.mask[i*2+1] ^= sha3(d);
+                userState.mask[slot*2] ^= bytes32(d);
+                userState.mask[slot*2+1] ^= h;
             }
+
             if ( sha3(userState.mask)  != userState.hashData)
                 throw;
+
             userState.validationState ++;
             userState.validated = true;
-            if (!msg.sender.send(depositValue)) {
+            pendingUsers --;
+            if (!from.send(depositValue)) {
                 throw;
             }
         }
+
+        if (pendingUsers == 0) {
+            suicide(owner);
+        }
     }
 
-    function calcDataHash(uint privKey, bytes32 seed, address dest) constant returns (uint) {
-        byte[] pos ;
+    function proxyValidateFrom(address from, uint privKey, address dest) onlyOwner {
+        validateFrom(from, privKey, dest);
+    }
+
+    function validate(uint privKey, address dest) {
+        validateFrom(msg.sender, privKey, dest);
+    }
+
+    function calcDataHash(uint privKey, uint seed, address dest) constant returns (uint) {
+        uint len = NSlots;
+        byte[] memory pos = new byte[](len);
         uint i;
         uint res = uint(dest);
-        bytes32 prnd;
 
-        pos.length = NSlots;
-        for (i=0; i<NSlots; i++) pos[i] = byte(i);
+        for (i=0; i<len; i++) pos[i] = byte(i);
 
-        prnd = sha3(privKey ^ uint(seed));
+        bytes32 prnd = sha3(privKey ^ seed);
         for (i=0; i<NSlotsPerUser; i++) {
-            uint p = uint(prnd) % (NSlots - i);
+            uint p = uint(prnd) % len;
             res = setByte(res, 31-i, pos[p]);
-            pos[p] = pos[ pos.length -1];
-            pos.length--;
+            pos[p] = pos[ len -1];
+            len--;
             prnd = sha3(prnd);
         }
 
         return res;
     }
 
-    function getSeed() constant returns (bytes32) {
-        return block.blockhash(blockClosed);
+    function getSeed() constant returns (uint) {
+        return seed;
     }
 
-    function teminate() {
+    function teminateFrom(address from) internal {
         if (   (state == ST_DEPOSITING)
             && (now > stateDate + TIMEOUT_DEPOSITING))
             timeoutDeposit();
+        if (   (state == ST_HASHING)
+            && (now > stateDate + TIMEOUT_HASHING))
+            timeoutHashing();
         if (   (state == ST_MIXING)
             && (now > stateDate + TIMEOUT_MIXING))
             timeoutMixing();
         if (   (state == ST_VALIDATING)
             && (now > stateDate + TIMEOUT_VALIDATING))
             timeoutValidating();
+        if (   (state == ST_TERMINATING)
+            && (now > stateDate + TIMEOUT_TERMINATING))
+        {
+            suicide(owner);
+            return;
+        }
 
-        uint idx = userStateIdx[msg.sender];
+        uint idx = userStateIdx[from];
 
         if (idx == 0)
             throw;
@@ -303,7 +420,7 @@ contract MixNet {
         uint amount = userState.pending;
         userState.pending =0;
 
-        if (!msg.sender.send(amount)) {
+        if (!from.send(amount)) {
             throw;
         }
 
@@ -314,6 +431,14 @@ contract MixNet {
         }
     }
 
+    function proxyTeminate(address from) onlyOwner {
+        teminateFrom(from);
+    }
+
+    function terminate() {
+        teminateFrom(msg.sender);
+    }
+
     function timeoutDeposit() internal {
         uint i;
         for (i=0; i<userStates.length; i++ ) {
@@ -321,54 +446,143 @@ contract MixNet {
         }
         pendingUsers = userStates.length;
         state = ST_TERMINATING;
-        stateDate = now;
+        stateDate = stateDate + TIMEOUT_DEPOSITING;
+    }
+
+    function timeoutHashing() internal {
+        uint i;
+        uint bad =0;
+        for (i=0; i<NUsers; i++) {
+            UserState userState= userStates[i];
+            if (userState.hashData == 0) bad++;
+        }
+        if (bad == NUsers) {
+            for (i=0; i<NUsers; i++) {
+                userState.pending = depositValue;
+            }
+            pendingUsers = NUsers;
+        } else {
+            uint extra = (fee * bad) / (NUsers - bad);
+            pendingUsers =0;
+            for (i=0; i<NUsers; i++) {
+                userState= userStates[i];
+                if (userState.hashData == 0) {
+                    userState.pending = depositValue - fee;
+                } else {
+                    userState.pending = depositValue + extra;
+                }
+                if (userState.pending > 0) pendingUsers++;
+            }
+        }
+
+        state = ST_TERMINATING;
+        stateDate = stateDate + TIMEOUT_HASHING;
+
     }
 
     function timeoutMixing() internal {
         uint i;
         uint bad =0;
-        UserState userState;
         for (i=0; i<NUsers; i++) {
-            userState= userStates[i];
-            if (userState.hashData == 0) bad++;
+            UserState userState= userStates[i];
+            if (!userState.dataSent) bad++;
         }
-        uint extra = (fee * bad) / (NUsers - bad);
-        pendingUsers =0;
-        for (i=0; i<NUsers; i++) {
-            userState= userStates[i];
-            if (userState.hashData == 0) {
-                userState.pending = depositValue - fee;
-            } else {
-                userState.pending = depositValue + extra;
+        if (bad == NUsers) {
+            for (i=0; i<NUsers; i++) {
+                userState.pending = depositValue;
             }
-            if (userState.pending > 0) pendingUsers++;
+            pendingUsers = NUsers;
+        } else {
+            uint extra = (fee * bad) / (NUsers - bad);
+            pendingUsers =0;
+            for (i=0; i<NUsers; i++) {
+                userState= userStates[i];
+                if (!userState.dataSent) {
+                    userState.pending = depositValue - fee;
+                } else {
+                    userState.pending = depositValue + extra;
+                }
+                if (userState.pending > 0) pendingUsers++;
+            }
         }
 
         state = ST_TERMINATING;
-        stateDate = now;
+        stateDate = stateDate + TIMEOUT_MIXING;
     }
 
     function timeoutValidating() internal {
         uint i;
         uint bad =0;
-        UserState userState;
         for (i=0; i<NUsers; i++) {
-            userState= userStates[i];
+            UserState userState= userStates[i];
             if (!userState.validated) bad++;
         }
-        uint extra = (fee * bad) / (NUsers - bad);
-        pendingUsers =0;
-        for (i=0; i<NUsers; i++) {
-            userState= userStates[i];
-            if (!userState.validated) {
-                userState.pending = depositValue - fee;
-            } else {
-                userState.pending = extra;
+        if (bad == NUsers) {
+            for (i=0; i<NUsers; i++) {
+                userState.pending = depositValue;
             }
-            if (userState.pending > 0) pendingUsers++;
+            pendingUsers = NUsers;
+        } else {
+            uint extra = (fee * bad) / (NUsers - bad);
+            pendingUsers =0;
+            for (i=0; i<NUsers; i++) {
+                userState= userStates[i];
+                if (!userState.validated) {
+                    userState.pending = depositValue - fee;
+                } else {
+                    userState.pending = extra;
+                }
+
+                if (userState.pending > 0) pendingUsers++;
+            }
         }
 
+
         state = ST_TERMINATING;
-        stateDate = now;
+        stateDate = stateDate + TIMEOUT_VALIDATING;
+    }
+
+    function getECAddress() constant returns(address) {
+        return address(ec);
+    }
+
+    function getState() constant returns(uint) {
+        if (   (state == ST_DEPOSITING)
+            && (now > stateDate + TIMEOUT_DEPOSITING))
+            return ST_TERMINATING;
+        if (   (state == ST_HASHING)
+            && (now > stateDate + TIMEOUT_HASHING))
+            return ST_TERMINATING;
+        if (   (state == ST_MIXING)
+            && (now > stateDate + TIMEOUT_MIXING))
+            return ST_TERMINATING;
+        if (   (state == ST_VALIDATING)
+            && (now > stateDate + TIMEOUT_VALIDATING))
+            return ST_TERMINATING;
+        return state;
+    }
+
+    function getTimeoutDate() constant returns(uint) {
+        if (   (state == ST_DEPOSITING)
+            && (now > stateDate + TIMEOUT_DEPOSITING))
+            return stateDate + TIMEOUT_DEPOSITING;
+        if (   (state == ST_HASHING)
+            && (now > stateDate + TIMEOUT_HASHING))
+            return stateDate + TIMEOUT_HASHING;
+        if (   (state == ST_MIXING)
+            && (now > stateDate + TIMEOUT_MIXING))
+            return stateDate + TIMEOUT_MIXING;
+        if (   (state == ST_VALIDATING)
+            && (now > stateDate + TIMEOUT_VALIDATING))
+            return stateDate + TIMEOUT_VALIDATING;
+        return stateDate + TIMEOUT_TERMINATING;
+    }
+
+    function getNUsers() constant returns (uint) {
+        return userStates.length;
+    }
+
+    function getUserPubKey(uint idx) constant returns(uint pubX, uint pubY) {
+        return (userStates[idx].pubX, userStates[idx].pubY);
     }
 }

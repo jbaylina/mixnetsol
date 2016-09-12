@@ -1,0 +1,31 @@
+{
+  "name": "mixnetsol",
+  "version": "0.0.2",
+  "description": "A Mix Network implementation in solidity",
+  "main": "mixnet_helper.js",
+  "directories": {
+    "test": "test"
+  },
+  "scripts": {
+    "test": "mocha"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jbaylina/mixnetsol.git"
+  },
+  "keywords": [
+    "mixnet",
+    "solidity",
+    "ethereum",
+    "mix"
+  ],
+  "author": "Jordi Baylina",
+  "license": "GPL-3.0",
+  "bugs": {
+    "url": "https://github.com/jbaylina/mixnetsol/issues"
+  },
+  "homepage": "https://github.com/jbaylina/mixnetsol",
+  "dependencies": {
+    "ecsol": "0.0.3"
+  }
+}

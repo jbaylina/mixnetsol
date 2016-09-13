@@ -81,16 +81,18 @@ describe('Normal MixNet Operation', function(){
         });
     });
     it('Should create NUsers wallets and deposit', function(done) {
+        this.timeout(200000000);
+        log("Creating user wallets and epositing" + NUsers);
         mixUsers = new Array(NUsers);
-        var i=0;
-        async.whilst(
-            function() { return i < NUsers; },
-            function(cb) {
+        async.eachSeries( _.range(0,NUsers),
+            function(i, cb) {
                 var dest = '0x'+Wallet.generate().getAddress().toString('hex');
                 mixUsers[i] = new MixUser(dest);
+                log("hashRand: " + mixUsers[i].getHashRnd());
                 mixNet.deposit(
                     mixUsers[i].getPubX(),
                     mixUsers[i].getPubY(),
+                    mixUsers[i].getHashRnd(),
                     {
                         from: accounts[i],
                         value: ethConnector.web3.toWei(depositValue),
@@ -100,7 +102,6 @@ describe('Normal MixNet Operation', function(){
                         cb();
                     }
                 );
-                i++;
             },
             function (err, n) {
                 assert.ifError(err);
@@ -109,15 +110,12 @@ describe('Normal MixNet Operation', function(){
         );
     });
     it('Should close', function(done) {
-        mixNet.close({from: accounts[0], gas: 200000}, function(err) {
+        bcDelay(3600+10, function(err) {
             assert.ifError(err);
             mixNet.getState(function(err, _st) {
                 assert.ifError(err);
-                assert.equal(_st, 1);
-                send("evm_mine", function(err, result) {
-                    assert.ifError(err);
-                    done();
-                });
+                assert.equal(_st.toNumber(), 1);
+                done();
             });
         });
     });
@@ -149,6 +147,34 @@ describe('Normal MixNet Operation', function(){
                 }
             );
         });
+    });
+    it('Should generateSeed', function(done) {
+        log("Start generateSeed");
+        async.eachSeries( _.range(0,NUsers),
+            function(i, cb) {
+                log("start User " + i);
+                mixNet.setRnd(
+                    mixUsers[i].getRnd(),
+                    {
+                        from: accounts[i],
+                        gas: 2000000
+                    },
+                    function(err, res) {
+                        if(err) return cb(err);
+                        cb();
+                    }
+                );
+            },
+            function (err) {
+                assert.ifError(err);
+                mixNet.getState(function(err, _st) {
+                    assert.ifError(err);
+                    assert.equal(_st, 2);
+                    log("Random generated");
+                    done();
+                });
+            }
+        );
     });
     it('Should get seed', function(done) {
         mixNet.getSeed(function(err, _seed) {
@@ -183,7 +209,7 @@ describe('Normal MixNet Operation', function(){
                 assert.ifError(err);
                 mixNet.getState(function(err, _st) {
                     assert.ifError(err);
-                    assert.equal(_st, 2);
+                    assert.equal(_st, 3);
                     log("hashed");
                     done();
                 });
@@ -277,5 +303,17 @@ describe('Normal MixNet Operation', function(){
             while (n.length < 64) n= '0'+n;
             log("0x"+n);
         }
+    }
+
+    function bcDelay(secs, cb) {
+        send("evm_increaseTime", [secs], function(err, result) {
+            if (err) return cb(err);
+
+      // Mine a block so new time is recorded.
+            send("evm_mine", function(err, result) {
+                if (err) return cb(err);
+                cb();
+            });
+        });
     }
 });

@@ -13,6 +13,7 @@ var NSlotsPerUser = 5;
 function MixUser(dest) {
     this.key = ec.genKeyPair();
     this.dest = dest;
+    this.rnd = ec.genKeyPair();
 }
 
 MixUser.prototype.getPrivate = function() {
@@ -32,6 +33,19 @@ MixUser.prototype.getPubY = function() {
     var pub_y = new BigNumber(pub.y.toString(16), 16);
     return pub_y;
 };
+
+MixUser.prototype.getRnd = function() {
+    var priv = this.rnd.getPrivate();
+    var d = new BigNumber(priv.toString(16), 16);
+    return d;
+};
+
+MixUser.prototype.getHashRnd = function() {
+    var rnd  = this.getRnd();
+    return ethConnector.web3.sha3(rnd.toString(16), {encoding: 'hex'});
+};
+
+
 
 
 function getByte(d, p) {

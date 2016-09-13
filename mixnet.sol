@@ -10,12 +10,14 @@ contract EC {
 contract MixNet {
 
     uint constant ST_DEPOSITING = 0;
-    uint constant ST_HASHING = 1;
-    uint constant ST_MIXING = 2;
-    uint constant ST_VALIDATING = 3;
-    uint constant ST_TERMINATING = 4;
+    uint constant ST_SEEDGEN = 1;
+    uint constant ST_HASHING = 2;
+    uint constant ST_MIXING = 3;
+    uint constant ST_VALIDATING = 4;
+    uint constant ST_TERMINATING = 5;
 
     uint constant TIMEOUT_DEPOSITING = 1 hours;
+    uint constant TIMEOUT_SEEDGEN = 1 hours;
     uint constant TIMEOUT_HASHING = 1 hours;
     uint constant TIMEOUT_MIXING = 1 hours;
     uint constant TIMEOUT_VALIDATING = 1 hours;
@@ -41,6 +43,9 @@ contract MixNet {
     struct UserState {
         uint pubX;
         uint pubY;
+// Generate random seed
+        bytes32 hashRnd;
+
 // For hashing
         bytes32 hashData;
 
@@ -60,7 +65,7 @@ contract MixNet {
 
     UserState[] public userStates;
 
-    mapping(address => uint) userStateIdx; // Index Relative to 1 in userStates
+    mapping(address => uint) public userStateIdx; // Index Relative to 1 in userStates
 
 
     bytes32[] board;
@@ -86,7 +91,7 @@ contract MixNet {
 
 
 
-    function depositFrom(address from, uint pubX, uint pubY) internal {
+    function depositFrom(address from, uint pubX, uint pubY, bytes32 hashRnd) internal {
         uint idx = userStateIdx[from];
 
         if (state != ST_DEPOSITING)
@@ -97,6 +102,8 @@ contract MixNet {
             throw;
         if (now > stateDate + TIMEOUT_DEPOSITING)
             throw;
+        if (hashRnd == 0)
+            throw;
 
         userStates.length ++;
         UserState userState = userStates [userStates.length-1];
@@ -104,6 +111,7 @@ contract MixNet {
 
         userState.pubX = pubX;
         userState.pubY = pubY;
+        userState.hashRnd  = hashRnd;
 
         pendingUsers--;
 
@@ -112,22 +120,28 @@ contract MixNet {
         }
     }
 
-    function deposit(uint pubX, uint pubY) payable {
-        depositFrom(msg.sender, pubX, pubY);
+    function deposit(uint pubX, uint pubY, bytes32 hashRnd) payable {
+        depositFrom(msg.sender, pubX, pubY, hashRnd);
     }
 
-    function proxyDeposit(address from, uint pubX, uint pubY) onlyOwner payable {
-        depositFrom(from, pubX, pubY);
+    function proxyDeposit(address from, uint pubX, uint pubY, bytes32 hashRnd) onlyOwner payable {
+        depositFrom(from, pubX, pubY, hashRnd);
     }
 
 
     function doClose() internal {
         NUsers = userStates.length;
+        if (NUsers == 1) {
+            state = ST_TERMINATING;
+            stateDate = stateDate + TIMEOUT_DEPOSITING;
+            userStates[0].pending = depositValue;
+            pendingUsers = 1;
+            return;
+        }
         NSlots = NUsers * NSlotsPerUser;
-        state = ST_HASHING;
+        state = ST_SEEDGEN;
         pendingUsers = NUsers;
         stateDate = now;
-        seed = uint(sha3(now, block.blockhash(block.number-1)));
         board.length = NSlots * 2;
     }
 
@@ -138,6 +152,45 @@ contract MixNet {
             throw;
 
         doClose();
+    }
+
+    function setRndFrom(address from, uint rnd) internal {
+        uint idx = userStateIdx[from];
+
+        if ((state == ST_DEPOSITING) && (now > stateDate + TIMEOUT_DEPOSITING)) {
+            doClose();
+        }
+
+        if (idx == 0)
+            throw;
+        if (state != ST_SEEDGEN)
+            throw;
+        if (now > stateDate + TIMEOUT_SEEDGEN)
+            throw;
+
+        UserState userState = userStates[idx-1];
+
+        if (sha3(rnd) != userState.hashRnd)
+            throw;
+        userState.hashRnd=0;
+
+        seed = seed ^ rnd;
+
+        pendingUsers--;
+
+        if (pendingUsers == 0) {
+            state = ST_HASHING;
+            pendingUsers = NUsers;
+            stateDate = now;
+        }
+    }
+
+    function proxySetRnd(address from, uint rnd) onlyOwner {
+        setRndFrom(from, rnd);
+    }
+
+    function setRnd(uint rnd) {
+        setRndFrom(msg.sender, rnd);
     }
 
     function setHashFrom(address from, bytes32 hash) internal {
@@ -402,9 +455,13 @@ contract MixNet {
     }
 
     function teminateFrom(address from) internal {
+
         if (   (state == ST_DEPOSITING)
             && (now > stateDate + TIMEOUT_DEPOSITING))
-            timeoutDeposit();
+            doClose();
+        if (   (state == ST_SEEDGEN)
+            && (now > stateDate + TIMEOUT_SEEDGEN))
+            timeoutSeedGen();
         if (   (state == ST_HASHING)
             && (now > stateDate + TIMEOUT_HASHING))
             timeoutHashing();
@@ -452,14 +509,35 @@ contract MixNet {
         teminateFrom(msg.sender);
     }
 
-    function timeoutDeposit() internal {
+    function timeoutSeedGen() internal {
         uint i;
-        for (i=0; i<userStates.length; i++ ) {
-            userStates[i].pending = depositValue;
+        uint bad =0;
+        for (i=0; i<NUsers; i++) {
+            UserState userState= userStates[i];
+            if (userState.hashRnd != 0) bad++;
         }
-        pendingUsers = userStates.length;
+        if (bad == NUsers) {
+            for (i=0; i<NUsers; i++) {
+                userState.pending = depositValue;
+            }
+            pendingUsers = NUsers;
+        } else {
+            uint extra = (fee * bad) / (NUsers - bad);
+            pendingUsers =0;
+            for (i=0; i<NUsers; i++) {
+                userState= userStates[i];
+                if (userState.hashRnd != 0) {
+                    userState.pending = depositValue - fee;
+                } else {
+                    userState.pending = depositValue + extra;
+                }
+                if (userState.pending > 0) pendingUsers++;
+            }
+        }
+
         state = ST_TERMINATING;
-        stateDate = stateDate + TIMEOUT_DEPOSITING;
+        stateDate = stateDate + TIMEOUT_HASHING;
+
     }
 
     function timeoutHashing() internal {
@@ -562,6 +640,15 @@ contract MixNet {
     function getState() constant returns(uint) {
         if (   (state == ST_DEPOSITING)
             && (now > stateDate + TIMEOUT_DEPOSITING))
+        {
+            if ((userStates.length >1)&&(now < stateDate + TIMEOUT_DEPOSITING + TIMEOUT_SEEDGEN)) {
+                return ST_SEEDGEN;
+            } else {
+                return ST_TERMINATING;
+            }
+        }
+        if (   (state == ST_SEEDGEN)
+            && (now > stateDate + TIMEOUT_SEEDGEN))
             return ST_TERMINATING;
         if (   (state == ST_HASHING)
             && (now > stateDate + TIMEOUT_HASHING))
@@ -576,19 +663,49 @@ contract MixNet {
     }
 
     function getTimeoutDate() constant returns(uint) {
-        if (   (state == ST_DEPOSITING)
-            && (now > stateDate + TIMEOUT_DEPOSITING))
-            return stateDate + TIMEOUT_DEPOSITING;
-        if (   (state == ST_HASHING)
-            && (now > stateDate + TIMEOUT_HASHING))
-            return stateDate + TIMEOUT_HASHING;
-        if (   (state == ST_MIXING)
-            && (now > stateDate + TIMEOUT_MIXING))
-            return stateDate + TIMEOUT_MIXING;
-        if (   (state == ST_VALIDATING)
-            && (now > stateDate + TIMEOUT_VALIDATING))
-            return stateDate + TIMEOUT_VALIDATING;
-        return stateDate + TIMEOUT_TERMINATING;
+        if (state == ST_DEPOSITING) {
+            if (now > stateDate + TIMEOUT_DEPOSITING) {
+                if ((userStates.length >1)&&(now < stateDate + TIMEOUT_DEPOSITING + TIMEOUT_SEEDGEN)) {
+                    return stateDate + TIMEOUT_DEPOSITING + TIMEOUT_SEEDGEN;
+                } else {
+                    return stateDate + TIMEOUT_DEPOSITING + TIMEOUT_TERMINATING;
+                }
+            } else {
+                return stateDate + TIMEOUT_DEPOSITING;
+            }
+        }
+        if (state == ST_SEEDGEN) {
+            if (now > stateDate + TIMEOUT_SEEDGEN) {
+                return stateDate + TIMEOUT_SEEDGEN + TIMEOUT_TERMINATING;
+            } else {
+                return stateDate + TIMEOUT_SEEDGEN;
+            }
+        }
+        if (state == ST_HASHING) {
+            if (now > stateDate + TIMEOUT_HASHING) {
+                return stateDate + TIMEOUT_HASHING + TIMEOUT_TERMINATING;
+            } else {
+                return stateDate + TIMEOUT_HASHING;
+            }
+        }
+        if (state == ST_MIXING) {
+            if (now > stateDate + TIMEOUT_MIXING) {
+                return stateDate + TIMEOUT_MIXING + TIMEOUT_TERMINATING;
+            } else {
+                return stateDate + TIMEOUT_MIXING;
+            }
+        }
+        if (state == ST_VALIDATING) {
+            if (now > stateDate + TIMEOUT_VALIDATING) {
+                return stateDate + TIMEOUT_VALIDATING + TIMEOUT_TERMINATING;
+            } else {
+                return stateDate + TIMEOUT_VALIDATING;
+            }
+        }
+        if (state == ST_TERMINATING) {
+            return stateDate + TIMEOUT_TERMINATING;
+        }
+        throw;
     }
 
     function getNUsers() constant returns (uint) {

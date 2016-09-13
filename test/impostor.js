@@ -82,16 +82,18 @@ describe('One impostor change the data', function(){
         });
     });
     it('Should create NUsers wallets and deposit', function(done) {
+        this.timeout(200000000);
+        log("Creating user wallets and epositing" + NUsers);
         mixUsers = new Array(NUsers);
-        var i=0;
-        async.whilst(
-            function() { return i < NUsers; },
-            function(cb) {
+        async.eachSeries( _.range(0,NUsers),
+            function(i, cb) {
                 var dest = '0x'+Wallet.generate().getAddress().toString('hex');
                 mixUsers[i] = new MixUser(dest);
+                log("hashRand: " + mixUsers[i].getHashRnd());
                 mixNet.deposit(
                     mixUsers[i].getPubX(),
                     mixUsers[i].getPubY(),
+                    mixUsers[i].getHashRnd(),
                     {
                         from: accounts[i],
                         value: ethConnector.web3.toWei(depositValue),
@@ -101,7 +103,6 @@ describe('One impostor change the data', function(){
                         cb();
                     }
                 );
-                i++;
             },
             function (err, n) {
                 assert.ifError(err);
@@ -110,15 +111,12 @@ describe('One impostor change the data', function(){
         );
     });
     it('Should close', function(done) {
-        mixNet.close({from: accounts[0], gas: 200000}, function(err) {
+        bcDelay(3600+10, function(err) {
             assert.ifError(err);
             mixNet.getState(function(err, _st) {
                 assert.ifError(err);
-                assert.equal(_st, 1);
-                send("evm_mine", function(err, result) {
-                    assert.ifError(err);
-                    done();
-                });
+                assert.equal(_st.toNumber(), 1);
+                done();
             });
         });
     });
@@ -150,6 +148,34 @@ describe('One impostor change the data', function(){
                 }
             );
         });
+    });
+    it('Should generateSeed', function(done) {
+        log("Start generateSeed");
+        async.eachSeries( _.range(0,NUsers),
+            function(i, cb) {
+                log("start User " + i);
+                mixNet.setRnd(
+                    mixUsers[i].getRnd(),
+                    {
+                        from: accounts[i],
+                        gas: 2000000
+                    },
+                    function(err, res) {
+                        if(err) return cb(err);
+                        cb();
+                    }
+                );
+            },
+            function (err) {
+                assert.ifError(err);
+                mixNet.getState(function(err, _st) {
+                    assert.ifError(err);
+                    assert.equal(_st, 2);
+                    log("Random generated");
+                    done();
+                });
+            }
+        );
     });
     it('Should get seed', function(done) {
         mixNet.getSeed(function(err, _seed) {
@@ -192,7 +218,7 @@ describe('One impostor change the data', function(){
                 assert.ifError(err);
                 mixNet.getState(function(err, _st) {
                     assert.ifError(err);
-                    assert.equal(_st, 2);
+                    assert.equal(_st, 3);
                     log("hashed");
                     done();
                 });
@@ -225,7 +251,7 @@ describe('One impostor change the data', function(){
     it('Should be in validation state', function(done) {
         mixNet.getState(function(err, _st) {
             assert.ifError(err);
-            assert.equal(_st, 3);
+            assert.equal(_st, 4);
             done();
         });
     });
@@ -265,8 +291,8 @@ describe('One impostor change the data', function(){
                                 if(err) return cb(err);
                                 mixNet.userStates(0, function(err, res) {
                                     log(JSON.stringify(res));
-                                    assert.equal(res[7].toNumber(), i+1);
-                                    assert.equal(res[8], i == NUsers ? true: false);
+                                    assert.equal(res[8].toNumber(), i+1);
+                                    assert.equal(res[9], i == NUsers ? true: false);
                                     cb();
                                 });
                             });
@@ -304,19 +330,13 @@ describe('One impostor change the data', function(){
         ], done);
     });
     it('Should wait unitil terminate', function(done) {
-        send("evm_increaseTime", [3600+10], function(err, result) {
+        bcDelay(3600+10, function(err) {
             if (err) return done(err);
-
-      // Mine a block so new time is recorded.
-            send("evm_mine", function(err, result) {
-                if (err) return done(err);
-
-                mixNet.getState(function(err, _st) {
-                    assert.ifError(err);
-                    log("In terminate phase");
-                    assert.equal(_st, 4);
-                    done();
-                });
+            mixNet.getState(function(err, _st) {
+                assert.ifError(err);
+                log("In terminate phase");
+                assert.equal(_st, 5);
+                done();
             });
         });
     });
@@ -372,7 +392,7 @@ describe('One impostor change the data', function(){
             }
         );
     });
-    it("If should disacpear contract", function(done) {
+    it("If should disapear contract", function(done) {
         ethConnector.web3.eth.getCode(mixNet.address, function(err, code) {
             assert.ifError(err);
             log(code);
@@ -442,5 +462,17 @@ describe('One impostor change the data', function(){
 
         var res = ethConnector.web3.sha3( maskH,  {encoding: 'hex'});
         return res;
+    }
+
+    function bcDelay(secs, cb) {
+        send("evm_increaseTime", [secs], function(err, result) {
+            if (err) return cb(err);
+
+      // Mine a block so new time is recorded.
+            send("evm_mine", function(err, result) {
+                if (err) return cb(err);
+                cb();
+            });
+        });
     }
 });
